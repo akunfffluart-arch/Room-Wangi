@@ -1,0 +1,372 @@
+name: Build APK RoomWangi
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Generate Files
+      run: |
+        mkdir -p app/src/main/java/com/oll/mlcheat
+        mkdir -p app/src/main/res/xml
+        
+        cat << 'EOF' > settings.gradle
+        pluginManagement {
+            repositories {
+                google()
+                mavenCentral()
+                gradlePluginPortal()
+            }
+        }
+        dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories {
+                google()
+                mavenCentral()
+            }
+        }
+        rootProject.name = "RoomWangi"
+        include ':app'
+        EOF
+
+        cat << 'EOF' > build.gradle
+        plugins {
+            id 'com.android.application' version '8.2.2' apply false
+        }
+        EOF
+
+        cat << 'EOF' > app/build.gradle
+        plugins {
+            id 'com.android.application'
+        }
+        android {
+            namespace 'com.oll.mlcheat'
+            compileSdk 34
+            defaultConfig {
+                applicationId "com.oll.mlcheat"
+                minSdk 29
+                targetSdk 34
+                versionCode 1
+                versionName "1.0"
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/AndroidManifest.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.oll.mlcheat">
+            <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+            <application android:allowBackup="false" android:label="RoomWangi" android:theme="@android:style/Theme.Material.NoActionBar">
+                <activity android:name=".MainActivity" android:exported="true">
+                    <intent-filter>
+                        <action android:name="android.intent.action.MAIN"/>
+                        <category android:name="android.intent.category.LAUNCHER"/>
+                    </intent-filter>
+                </activity>
+                <service android:name=".OverlayService" android:exported="false" android:foregroundServiceType="mediaProjection"/>
+                <service android:name=".AimService" android:exported="true" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                    <intent-filter>
+                        <action android:name="android.accessibilityservice.AccessibilityService"/>
+                    </intent-filter>
+                    <meta-data android:name="android.accessibilityservice" android:resource="@xml/aim_config"/>
+                </service>
+            </application>
+        </manifest>
+        EOF
+
+        cat << 'EOF' > app/src/main/res/xml/aim_config.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+            android:accessibilityEventTypes="typeWindowStateChanged"
+            android:accessibilityFeedbackType="feedbackGeneric"
+            android:canPerformGestures="true"
+            android:notificationTimeout="100"/>
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/oll/mlcheat/MainActivity.java
+        package com.oll.mlcheat;
+        import android.app.Activity;
+        import android.content.Intent;
+        import android.media.projection.MediaProjectionManager;
+        import android.net.Uri;
+        import android.os.Bundle;
+        import android.provider.Settings;
+        import android.widget.Button;
+        import android.widget.LinearLayout;
+        public class MainActivity extends Activity {
+            private static final int REQ_CAP = 100;
+            private MediaProjectionManager mpm;
+            @Override protected void onCreate(Bundle b) {
+                super.onCreate(b);
+                mpm = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+                LinearLayout ll = new LinearLayout(this);
+                ll.setOrientation(LinearLayout.VERTICAL);
+                ll.setPadding(60, 120, 60, 60);
+                Button perm = new Button(this);
+                perm.setText("1. Izin Overlay");
+                perm.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()))));
+                Button acc = new Button(this);
+                acc.setText("2. Aktifkan Accessibility");
+                acc.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+                Button start = new Button(this);
+                start.setText("3. Mulai RoomWangi");
+                start.setOnClickListener(v -> startActivityForResult(mpm.createScreenCaptureIntent(), REQ_CAP));
+                ll.addView(perm); ll.addView(acc); ll.addView(start);
+                setContentView(ll);
+            }
+            @Override protected void onActivityResult(int rq, int rc, Intent d) {
+                super.onActivityResult(rq, rc, d);
+                if (rq == REQ_CAP && rc == RESULT_OK && d != null) {
+                    Intent svc = new Intent(this, OverlayService.class);
+                    svc.putExtra(OverlayService.EXTRA_RESULT, rc);
+                    svc.putExtra(OverlayService.EXTRA_DATA, d);
+                    startForegroundService(svc);
+                }
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/oll/mlcheat/AimService.java
+        package com.oll.mlcheat;
+        import android.accessibilityservice.AccessibilityService;
+        import android.accessibilityservice.GestureDescription;
+        import android.graphics.Path;
+        import android.view.accessibility.AccessibilityEvent;
+        public class AimService extends AccessibilityService {
+            private static AimService instance;
+            public static AimService get() { return instance; }
+            @Override protected void onServiceConnected() { instance = this; }
+            @Override public void onAccessibilityEvent(AccessibilityEvent e) { }
+            @Override public void onInterrupt() { }
+            public void tap(float x, float y) {
+                Path p = new Path();
+                p.moveTo(x, y);
+                GestureDescription.StrokeDescription s = new GestureDescription.StrokeDescription(p, 0, 60);
+                dispatchGesture(new GestureDescription.Builder().addStroke(s).build(), null, null);
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/oll/mlcheat/OverlayView.java
+        package com.oll.mlcheat;
+        import android.content.Context;
+        import android.graphics.*;
+        import android.view.View;
+        import java.util.List;
+        public class OverlayView extends View {
+            private List<OcrDetector.Target> targets;
+            private final Paint boxPaint = new Paint();
+            private final Paint aimPaint = new Paint();
+            private int sw, sh;
+            public OverlayView(Context c) {
+                super(c);
+                boxPaint.setStyle(Paint.Style.STROKE);
+                boxPaint.setStrokeWidth(5f);
+                boxPaint.setColor(Color.parseColor("#FF2BD96B"));
+                aimPaint.setStyle(Paint.Style.STROKE);
+                aimPaint.setStrokeWidth(3f);
+                aimPaint.setColor(Color.parseColor("#FFFF3355"));
+            }
+            public void setTargets(List<OcrDetector.Target> t, int sw, int sh) {
+                this.targets = t; this.sw = sw; this.sh = sh;
+                postInvalidate();
+            }
+            @Override protected void onDraw(Canvas c) {
+                super.onDraw(c);
+                if (targets == null || targets.isEmpty()) return;
+                int cx = sw / 2, cy = sh / 2;
+                OcrDetector.Target best = null;
+                float bestD = Float.MAX_VALUE;
+                for (OcrDetector.Target t : targets) {
+                    c.drawRect(t.left, t.top, t.right, t.bottom, boxPaint);
+                    float d = (float) Math.hypot(t.cx - cx, t.cy - cy);
+                    if (d < bestD) { bestD = d; best = t; }
+                }
+                if (best != null) c.drawLine(cx, cy, best.cx, best.cy, aimPaint);
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/oll/mlcheat/OcrDetector.java
+        package com.oll.mlcheat;
+        import android.content.Context;
+        import android.graphics.Bitmap;
+        import java.util.ArrayList;
+        import java.util.List;
+        public class OcrDetector {
+            public static class Target {
+                public float left, top, right, bottom, cx, cy;
+                public Target(float l, float t, float r, float b) {
+                    left=l; top=t; right=r; bottom=b;
+                    cx=(l+r)/2f; cy=(t+b)/2f;
+                }
+            }
+            public OcrDetector(Context ctx) { }
+            public List<Target> detect(Bitmap bmp) {
+                List<Target> out = new ArrayList<>();
+                int w = bmp.getWidth(), h = bmp.getHeight();
+                int[] px = new int[w * h];
+                bmp.getPixels(px, 0, w, 0, 0, w, h);
+                int step = 4;
+                for (int y = 0; y < h - 26; y += step) {
+                    int x = 0;
+                    while (x < w) {
+                        if (isEnemyRed(px[y * w + x])) {
+                            int run = 1;
+                            while (x + run < w && run < 160 && isEnemyRed(px[y * w + x + run])) run++;
+                            if (run >= 30) {
+                                int vrun = 1;
+                                while (y + vrun < h && vrun < 26 && isEnemyRed(px[(y + vrun) * w + x])) vrun++;
+                                if (vrun >= 4) out.add(new Target(x, y, x + run, y + vrun));
+                            }
+                            x += run + step;
+                        } else x += step;
+                    }
+                }
+                return out;
+            }
+            private boolean isEnemyRed(int c) {
+                int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+                return r > 150 && g < 80 && b < 80 && r - Math.max(g, b) > 90;
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/oll/mlcheat/ScreenCapture.java
+        package com.oll.mlcheat;
+        import android.graphics.Bitmap;
+        import android.graphics.PixelFormat;
+        import android.hardware.display.DisplayManager;
+        import android.hardware.display.VirtualDisplay;
+        import android.media.Image;
+        import android.media.ImageReader;
+        import android.media.projection.MediaProjection;
+        import android.os.Handler;
+        import android.os.Looper;
+        import java.nio.ByteBuffer;
+        public class ScreenCapture {
+            public interface FrameListener { void onFrame(Bitmap bmp, long ts); }
+            private MediaProjection projection;
+            private VirtualDisplay display;
+            private ImageReader reader;
+            private final int w, h, dpi;
+            private final FrameListener listener;
+            private final Handler handler = new Handler(Looper.getMainLooper());
+            private volatile boolean running = false;
+            public ScreenCapture(MediaProjection p, int w, int h, int dpi, FrameListener l) {
+                this.projection = p; this.w = w; this.h = h; this.dpi = dpi; this.listener = l;
+            }
+            public void start() {
+                reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
+                display = projection.createVirtualDisplay("cap", w, h, dpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, handler);
+                reader.setOnImageAvailableListener(r -> {
+                    if (!running) return;
+                    Image img = r.acquireLatestImage();
+                    if (img == null) return;
+                    try {
+                        Image.Plane plane = img.getPlanes()[0];
+                        ByteBuffer buf = plane.getBuffer();
+                        int pixelStride = plane.getPixelStride();
+                        int rowStride = plane.getRowStride();
+                        int rowPadding = rowStride - pixelStride * w;
+                        Bitmap bmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888);
+                        bmp.copyPixelsFromBuffer(buf);
+                        Bitmap cropped = Bitmap.createBitmap(bmp, 0, 0, w, h);
+                        listener.onFrame(cropped, System.currentTimeMillis());
+                        bmp.recycle();
+                    } finally { img.close(); }
+                }, handler);
+                running = true;
+            }
+            public void stop() {
+                running = false;
+                if (display != null) display.release();
+                if (reader != null) reader.close();
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/oll/mlcheat/OverlayService.java
+        package com.oll.mlcheat;
+        import android.app.*;
+        import android.content.Intent;
+        import android.graphics.*;
+        import android.media.projection.MediaProjection;
+        import android.media.projection.MediaProjectionManager;
+        import android.os.*;
+        import android.view.*;
+        public class OverlayService extends Service implements ScreenCapture.FrameListener {
+            public static final String EXTRA_RESULT = "result";
+            public static final String EXTRA_DATA = "data";
+            private static final String CH = "roomwangi";
+            private WindowManager wm;
+            private OverlayView overlay;
+            private ScreenCapture capture;
+            private OcrDetector detector;
+            private int screenW, screenH, dpi;
+            @Override public int onStartCommand(Intent i, int flags, int startId) {
+                createChannel();
+                startForeground(1, buildNotif());
+                wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                WindowMetrics m = wm.getCurrentWindowMetrics();
+                Rect b = m.getBounds();
+                screenW = b.width(); screenH = b.height();
+                dpi = getResources().getDisplayMetrics().densityDpi;
+                overlay = new OverlayView(this);
+                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(screenW, screenH, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT);
+                wm.addView(overlay, lp);
+                detector = new OcrDetector(this);
+                int result = i.getIntExtra(EXTRA_RESULT, Activity.RESULT_CANCELED);
+                Intent data = i.getParcelableExtra(EXTRA_DATA);
+                MediaProjectionManager mpm = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+                MediaProjection p = mpm.getMediaProjection(result, data);
+                capture = new ScreenCapture(p, screenW, screenH, dpi, this);
+                capture.start();
+                return START_STICKY;
+            }
+            @Override public void onFrame(Bitmap bmp, long ts) {
+                java.util.List<OcrDetector.Target> targets = detector.detect(bmp);
+                overlay.setTargets(targets, screenW, screenH);
+                bmp.recycle();
+            }
+            @Override public void onDestroy() {
+                if (capture != null) capture.stop();
+                if (overlay != null && wm != null) wm.removeView(overlay);
+                super.onDestroy();
+            }
+            @Override public IBinder onBind(Intent i) { return null; }
+            private void createChannel() {
+                NotificationChannel c = new NotificationChannel(CH, "RoomWangi", NotificationManager.IMPORTANCE_LOW);
+                ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);
+            }
+            private Notification buildNotif() {
+                return new Notification.Builder(this, CH).setContentTitle("RoomWangi").setContentText("mewangi...").setSmallIcon(android.R.drawable.ic_menu_view).build();
+            }
+        }
+        EOF
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: 8.5
+
+    - name: Build APK
+      run: gradle assembleDebug
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: RoomWangi-APK
+        path: app/build/outputs/apk/debug/app-debug.apk
