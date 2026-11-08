@@ -160,18 +160,22 @@ jobs:
         import android.view.View;
         import java.util.List;
         public class OverlayView extends View {
-            private List<OcrDetector.Target> targets;
+            public List<OcrDetector.Target> targets;
+            public boolean showBox = true;
+            public boolean showAim = true;
             private final Paint boxPaint = new Paint();
             private final Paint aimPaint = new Paint();
-            private int sw, sh;
+            public int sw, sh;
             public OverlayView(Context c) {
                 super(c);
                 boxPaint.setStyle(Paint.Style.STROKE);
                 boxPaint.setStrokeWidth(5f);
                 boxPaint.setColor(Color.parseColor("#FF2BD96B"));
+                boxPaint.setAntiAlias(true);
                 aimPaint.setStyle(Paint.Style.STROKE);
                 aimPaint.setStrokeWidth(3f);
                 aimPaint.setColor(Color.parseColor("#FFFF3355"));
+                aimPaint.setAntiAlias(true);
             }
             public void setTargets(List<OcrDetector.Target> t, int sw, int sh) {
                 this.targets = t; this.sw = sw; this.sh = sh;
@@ -184,11 +188,11 @@ jobs:
                 OcrDetector.Target best = null;
                 float bestD = Float.MAX_VALUE;
                 for (OcrDetector.Target t : targets) {
-                    c.drawRect(t.left, t.top, t.right, t.bottom, boxPaint);
+                    if (showBox) c.drawRect(t.left, t.top, t.right, t.bottom, boxPaint);
                     float d = (float) Math.hypot(t.cx - cx, t.cy - cy);
                     if (d < bestD) { bestD = d; best = t; }
                 }
-                if (best != null) c.drawLine(cx, cy, best.cx, best.cy, aimPaint);
+                if (best != null && showAim) c.drawLine(cx, cy, best.cx, best.cy, aimPaint);
             }
         }
         EOF
@@ -301,6 +305,7 @@ jobs:
         import android.media.projection.MediaProjectionManager;
         import android.os.*;
         import android.view.*;
+        import android.widget.*;
         public class OverlayService extends Service implements ScreenCapture.FrameListener {
             public static final String EXTRA_RESULT = "result";
             public static final String EXTRA_DATA = "data";
@@ -310,9 +315,11 @@ jobs:
             private ScreenCapture capture;
             private OcrDetector detector;
             private int screenW, screenH, dpi;
+            private LinearLayout menuLayout;
+
             @Override public int onStartCommand(Intent i, int flags, int startId) {
                 createChannel();
-                startForeground(1, buildNotif());
+                startForeground(1, buildNotif(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
                 wm = (WindowManager) getSystemService(WINDOW_SERVICE);
                 WindowMetrics m = wm.getCurrentWindowMetrics();
                 Rect b = m.getBounds();
@@ -322,6 +329,7 @@ jobs:
                 WindowManager.LayoutParams lp = new WindowManager.LayoutParams(screenW, screenH, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT);
                 wm.addView(overlay, lp);
                 detector = new OcrDetector(this);
+                setupMenu();
                 int result = i.getIntExtra(EXTRA_RESULT, Activity.RESULT_CANCELED);
                 Intent data = i.getParcelableExtra(EXTRA_DATA);
                 MediaProjectionManager mpm = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
@@ -330,43 +338,85 @@ jobs:
                 capture.start();
                 return START_STICKY;
             }
+
+            private void setupMenu() {
+                menuLayout = new LinearLayout(this);
+                menuLayout.setOrientation(LinearLayout.VERTICAL);
+                menuLayout.setBackgroundColor(Color.parseColor("#CC000000"));
+                menuLayout.setPadding(20, 20, 20, 20);
+
+                CheckBox cbBox = new CheckBox(this);
+                cbBox.setText("ESP Box");
+                cbBox.setTextColor(Color.WHITE);
+                cbBox.setChecked(true);
+                cbBox.setOnCheckedChangeListener((v, isChecked) -> overlay.showBox = isChecked);
+
+                CheckBox cbAim = new CheckBox(this);
+                cbAim.setText("Aim Line");
+                cbAim.setTextColor(Color.WHITE);
+                cbAim.setChecked(true);
+                cbAim.setOnCheckedChangeListener((v, isChecked) -> overlay.showAim = isChecked);
+
+                Button btnClose = new Button(this);
+                btnClose.setText("Tutup Menu");
+                btnClose.setOnClickListener(v -> wm.removeView(menuLayout));
+
+                menuLayout.addView(cbBox);
+                menuLayout.addView(cbAim);
+                menuLayout.addView(btnClose);
+
+                WindowManager.LayoutParams mlp = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    PixelFormat.TRANSLUCENT);
+                mlp.gravity = Gravity.TOP | Gravity.START;
+                mlp.x = 50;
+                mlp.y = 200;
+                wm.addView(menuLayout, mlp);
+
+                menuLayout.setOnTouchListener(new View.OnTouchListener() {
+                    private int initialX, initialY;
+                    private float initialTouchX, initialTouchY;
+                    private long lastTouchTime = 0;
+                    @Override public boolean onTouch(View v, MotionEvent event) {
+                        switch (event.getAction()) {
+                            case MotionEvent.ACTION_DOWN:
+                                long currentTime = System.currentTimeMillis();
+                                if (currentTime - lastTouchTime < 300) {
+                                    wm.removeView(menuLayout);
+                                }
+                                lastTouchTime = currentTime;
+                                initialX = mlp.x;
+                                initialY = mlp.y;
+                                initialTouchX = event.getRawX();
+                                initialTouchY = event.getRawY();
+                                return true;
+                            case MotionEvent.ACTION_MOVE:
+                                mlp.x = initialX + (int) (event.getRawX() - initialTouchX);
+                                mlp.y = initialY + (int) (event.getRawY() - initialTouchY);
+                                wm.updateViewLayout(menuLayout, mlp);
+                                return true;
+                        }
+                        return false;
+                    }
+                });
+            }
+
             @Override public void onFrame(Bitmap bmp, long ts) {
                 java.util.List<OcrDetector.Target> targets = detector.detect(bmp);
                 overlay.setTargets(targets, screenW, screenH);
                 bmp.recycle();
             }
+
             @Override public void onDestroy() {
                 if (capture != null) capture.stop();
                 if (overlay != null && wm != null) wm.removeView(overlay);
+                if (menuLayout != null && wm != null) wm.removeView(menuLayout);
                 super.onDestroy();
             }
+
             @Override public IBinder onBind(Intent i) { return null; }
             private void createChannel() {
-                NotificationChannel c = new NotificationChannel(CH, "RoomWangi", NotificationManager.IMPORTANCE_LOW);
-                ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);
-            }
-            private Notification buildNotif() {
-                return new Notification.Builder(this, CH).setContentTitle("RoomWangi").setContentText("mewangi...").setSmallIcon(android.R.drawable.ic_menu_view).build();
-            }
-        }
-        EOF
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: 8.5
-
-    - name: Build APK
-      run: gradle assembleDebug
-
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: RoomWangi-APK
-        path: app/build/outputs/apk/debug/app-debug.apk
+                Not
